@@ -20,27 +20,28 @@ class CyclePixModel(BaseModel):
     def __init__(self , opt):
         BaseModel.__init__(self , opt)
 
-        self.loss_names = ['D_A' , 'G_A' , 'cycle_A' , 'idt_A' , 'D_B' , 'G_B' , 'cycle_B' , 'idt_B' , 'G_pix_A' , 'D_pix_A']
+        self.loss_names = ['D_A' , 'G_A' , 'cycle_A' , 'idt_A' , 'D_B' , 'G_B' , 'cycle_B' , 'idt_B' , 'net_D' , 'netG']
 
         visual_names_A = ['real_A' , 'fake_B' , 'rec_A']
         visual_names_B = ['real_B' , 'fake_B' , 'rec_A']
+        visual_names_pix = ['pix_B' , 'pix_B_' , 'pix_B__']
 
         if self.isTrain and self.opt.lambda_identity > 0.0: 
             visual_names_A.append('idt_B')
             visual_names_B.append('idt_A')     
 
-        self.visual_names = visual_names_A + visual_names_B
+        self.visual_names = visual_names_A + visual_names_B + visual_names_pix
         
         if self.isTrain:
-            self.model_names = ['G_A', 'G_B', 'D_A', 'D_B']
+            self.model_names = ['G_A', 'G_B', 'D_A', 'D_B' , 'P' , 'D']
         else:  
-            self.model_names = ['G_A', 'G_B']
+            self.model_names = ['G_A', 'G_B' , 'P']
         self.netG_A = networks.define_G(opt.input_nc, opt.output_nc, opt.ngf, opt.netG, opt.norm,
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
         self.netG_B = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
 
-        self.pix_G = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
+        self.netP = networks.define_G(opt.output_nc, opt.input_nc, opt.ngf, opt.netG, opt.norm,
                                         not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
 
         if self.isTrain: 
@@ -48,7 +49,7 @@ class CyclePixModel(BaseModel):
                                             opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
             self.netD_B = networks.define_D(opt.input_nc, opt.ndf, opt.netD,
                                             opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
-            self.pix_D = networks.define_D(opt.input_nc, opt.ndf, opt.netD,
+            self.netD = networks.define_D(opt.input_nc, opt.ndf, opt.netD,
                                             opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
 
         if self.isTrain:
@@ -63,8 +64,8 @@ class CyclePixModel(BaseModel):
             self.criterionCycle = torch.nn.L1Loss()
             self.pix2pix = torch.nn.L1Loss()
 
-            self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters() , self.pix_G), lr=opt.lr, betas=(opt.beta1, 0.999))
-            self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters() , self.pix_D), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_G = torch.optim.Adam(itertools.chain(self.netG_A.parameters(), self.netG_B.parameters() , self.netP), lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_D = torch.optim.Adam(itertools.chain(self.netD_A.parameters(), self.netD_B.parameters() , self.netD), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
 
@@ -82,9 +83,9 @@ class CyclePixModel(BaseModel):
         self.fake_A = self.netG_B(self.fake_B)
         self.rec_B = self.netG_A(self.fake_A)
 
-        self.pix_B = self.pix_G(self.real_A)
-        self.pix_B_ = self.pix_G(self.fake_A)
-        self.pix_B__ = self.pix_G(self.rec_A)
+        self.pix_B = self.netP(self.real_A)
+        self.pix_B_ = self.netP(self.fake_A)
+        self.pix_B__ = self.netP(self.rec_A)
 
     def backward_D_basic(self , netD , real , fake):
         real_pred = netD(real)
@@ -105,15 +106,15 @@ class CyclePixModel(BaseModel):
         fake_A = self.fake_A_pool.query(self.fake_A)
         self.loss_D_B = self.backward_D_basic(self.netD_B, self.real_A, fake_A)        
 
-    def backward_Pix_D(self):
+    def backward_netD(self):
         fake_pB = self.fake_B_pool.query(self.pix_B)
         fake_B_ = self.fake_B_pool.query(self.pix_B_)
         fake_B__ = self.fake_B_pool.query(self.pix_B__)
-        self.pix_D_loss = self.backward_D_basic(self.pix_D , self.real_B , fake_pB)
-        self.pix_D_loss_ = self.backward_D_basic(self.pix_D , self.real_B , fake_B_)
-        self.pix_D_loss__ = self.backward_D_basic(self.pix_D , self.real_B , fake_B__)
+        self.netD_loss = self.backward_D_basic(self.netD , self.real_B , fake_pB)
+        self.netD_loss_ = self.backward_D_basic(self.netD , self.real_B , fake_B_)
+        self.netD_loss__ = self.backward_D_basic(self.netD , self.real_B , fake_B__)
 
-        #self.loss_pix_D = self.pix_D_loss + 0.5 * self.pix_D_loss_ + 0.65 * self.pix_D_loss__
+        self.loss_netD = self.netD_loss + 0.5 * self.netD_loss_ + 0.65 * self.netD_loss__
 
     def backward_G(self):
         lambda_idt = self.opt.lambda_identity
@@ -135,28 +136,29 @@ class CyclePixModel(BaseModel):
 
         self.loss_G_B = self.criterionGAN(self.netD_B(self.fake_A) , True)
 
-        self.loss_pix_A = self.criterionGAN(self.pix_G(self.real_A) , True)
+        self.loss_pix_A = self.criterionGAN(self.netP(self.real_A) , True)
 
         self.loss_cycle_A = self.criterionCycle(self.rec_A , self.real_A) * lambda_A
         self.loss_cycle_B = self.criterionCycle(self.rec_B , self.real_B) * lambda_B
-        self.loss_pix_G = self.criterionCycle(self.fake_pB , self.real_B) 
-        self.loss_pix_G_ = self.criterionCycle(self.fake_B_ , self.real_B) * 0.5
-        self.loss_pix_G__ = self.criterionCycle(self.fake_B__ , self.real_B) * 0.65
+        self.loss_netP = self.criterionCycle(self.fake_pB , self.real_B) 
+        self.loss_netP_ = self.criterionCycle(self.fake_B_ , self.real_B) * 0.5
+        self.loss_netP__ = self.criterionCycle(self.fake_B__ , self.real_B) * 0.65
 
-        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B + self.loss_pix_A + self.loss_pix_G + self.loss_pix_G_ + self.loss_pix_G__
+        self.loss_netG = self.loss_netP + self.loss_netP_ + self.loss_netP__ + self.loss_pix_A
+        self.loss_G = self.loss_G_A + self.loss_G_B + self.loss_cycle_A + self.loss_cycle_B + self.loss_idt_A + self.loss_idt_B + self.loss_pix_A + self.loss_netP + self.loss_netP_ + self.loss_netP__
         self.loss_G.backward()
 
     def optimize_parameters(self):
         self.forward()
-        self.set_requires_grad([self.netD_A , self.netD_B , self.pix_D] , False)
+        self.set_requires_grad([self.netD_A , self.netD_B , self.netD] , False)
 
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()
 
-        self.set_requires_grad([self.net_D_A , self.net_D_B , self.pix_D] , True)
+        self.set_requires_grad([self.net_D_A , self.net_D_B , self.netD] , True)
         self.optimizer_D.zero_grad()
         self.backward_D_A()
         self.backward_D_B()
-        self.backward_Pix_D()
+        self.backward_netD()
         self.optimizer_D.step()
